@@ -2,5 +2,7 @@
   "name": "clientflow-cloudflare",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@mtproto/core": "6.3.0"
   }
 }

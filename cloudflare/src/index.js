@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import { MTProtoConnection } from "@mtproto2/mtproto";
 import { TELEGRAM_RSA_KEYS } from "@mtproto2/crypto";
 

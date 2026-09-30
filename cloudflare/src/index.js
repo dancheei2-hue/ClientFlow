@@ -15,7 +15,6 @@ function createReqPqMulti(nonce) {
   const payload = Buffer.alloc(20);
 
   payload.writeUInt32LE(0xbe7e8ef1, 0);
-
   Buffer.from(nonce).copy(payload, 4);
 
   return payload;
@@ -45,7 +44,7 @@ function parseAbridgedPacket(buffer) {
 
   if (data[0] === 0x7f) {
     if (data.length < 4) {
-      throw new Error("Invalid long abridged header");
+      throw new Error("Invalid abridged header");
     }
 
     words =
@@ -67,19 +66,27 @@ function parseAbridgedPacket(buffer) {
     );
   }
 
-  return data.subarray(offset, offset + length);
+  return data.subarray(
+    offset,
+    offset + length
+  );
 }
 
 function parseMtprotoMessage(packet) {
   if (packet.length < 20) {
     throw new Error(
-      `MTProto message too short: ${packet.length}`
+      `MTProto packet too short: ${packet.length}`
     );
   }
 
-  const authKeyId = packet.readBigUInt64LE(0);
-  const messageId = packet.readBigUInt64LE(8);
-  const length = packet.readUInt32LE(16);
+  const authKeyId =
+    packet.readBigUInt64LE(0);
+
+  const messageId =
+    packet.readBigUInt64LE(8);
+
+  const length =
+    packet.readUInt32LE(16);
 
   if (packet.length < 20 + length) {
     throw new Error(
@@ -87,27 +94,21 @@ function parseMtprotoMessage(packet) {
     );
   }
 
-  const body = packet.subarray(
-    20,
-    20 + length
-  );
-
   return {
     authKeyId,
     messageId,
     length,
-    body
+    body: packet.subarray(
+      20,
+      20 + length
+    )
   };
 }
 
 function parseResPQ(body) {
-  if (body.length < 4) {
-    throw new Error("resPQ body too short");
-  }
+  const constructor =
+    body.readUInt32LE(0);
 
-  const constructor = body.readUInt32LE(0);
-
-  // resPQ#05162463
   if (constructor !== 0x05162463) {
     throw new Error(
       `Unexpected constructor: 0x${constructor
@@ -118,36 +119,134 @@ function parseResPQ(body) {
 
   let offset = 4;
 
-  const nonce = body.subarray(offset, offset + 16);
+  const nonce =
+    body.subarray(offset, offset + 16);
+
   offset += 16;
 
   const serverNonce =
     body.subarray(offset, offset + 16);
+
   offset += 16;
 
-  const pqLength = body.readUInt8(offset);
+  const pqLength =
+    body.readUInt8(offset);
+
   offset += 1;
 
-  const pq = body.subarray(
-    offset,
-    offset + pqLength
-  );
-  offset += pqLength;
+  const pq =
+    body.subarray(
+      offset,
+      offset + pqLength
+    );
 
   return {
-    constructor,
     nonce,
     serverNonce,
+    pq
+  };
+}
+
+function bufferToBigIntLE(buffer) {
+  let result = 0n;
+
+  for (let i = buffer.length - 1; i >= 0; i--) {
+    result =
+      (result << 8n) |
+      BigInt(buffer[i]);
+  }
+
+  return result;
+}
+
+function bigIntToBufferLE(value, length) {
+  const result = Buffer.alloc(length);
+
+  let n = value;
+
+  for (let i = 0; i < length; i++) {
+    result[i] = Number(n & 0xffn);
+    n >>= 8n;
+  }
+
+  return result;
+}
+
+function gcd(a, b) {
+  while (b !== 0n) {
+    const t = a % b;
+    a = b;
+    b = t;
+  }
+
+  return a;
+}
+
+function pollardRho(n) {
+  if (n % 2n === 0n) {
+    return 2n;
+  }
+
+  let x = 2n;
+  let y = 2n;
+  let d = 1n;
+
+  const f = (v) =>
+    (v * v + 1n) % n;
+
+  let iterations = 0;
+
+  while (d === 1n && iterations < 1000000) {
+    x = f(x);
+    y = f(f(y));
+
+    d = gcd(
+      x > y ? x - y : y - x,
+      n
+    );
+
+    iterations++;
+  }
+
+  if (d !== 1n && d !== n) {
+    return d;
+  }
+
+  throw new Error(
+    "Pollard Rho failed"
+  );
+}
+
+function factorPQ(pqBuffer) {
+  const pq =
+    bufferToBigIntLE(pqBuffer);
+
+  if (pq <= 1n) {
+    throw new Error("Invalid pq");
+  }
+
+  let factor = pollardRho(pq);
+
+  let other = pq / factor;
+
+  if (factor > other) {
+    [factor, other] =
+      [other, factor];
+  }
+
+  return {
     pq,
-    remaining: body.subarray(offset)
+    p: factor,
+    q: other
   };
 }
 
 export class TelegramSession extends DurableObject {
   async fetch(request) {
-    const url = new URL(request.url);
+    const url =
+      new URL(request.url);
 
-    if (url.pathname === "/telegram-pq-test") {
+    if (url.pathname === "/telegram-pq-factor-test") {
       let socket = null;
       let writer = null;
       let reader = null;
@@ -177,7 +276,6 @@ export class TelegramSession extends DurableObject {
         const message =
           createMtprotoMessage(payload);
 
-        // Abridged transport
         await writer.write(
           new Uint8Array([0xef])
         );
@@ -218,53 +316,64 @@ export class TelegramSession extends DurableObject {
               Buffer.from(value)
             ]);
 
-          if (receiveBuffer.length < 1) {
-            continue;
-          }
-
           const packet =
             parseAbridgedPacket(
               receiveBuffer
             );
 
           const mtproto =
-            parseMtprotoMessage(packet);
+            parseMtprotoMessage(
+              packet
+            );
 
           const resPQ =
-            parseResPQ(mtproto.body);
+            parseResPQ(
+              mtproto.body
+            );
+
+          const factors =
+            factorPQ(resPQ.pq);
+
+          const pBuffer =
+            bigIntToBufferLE(
+              factors.p,
+              4
+            );
+
+          const qBuffer =
+            bigIntToBufferLE(
+              factors.q,
+              4
+            );
 
           return Response.json({
             status: "ok",
-            tcp: true,
-            telegram: true,
+
             mtproto: true,
             resPQ: true,
-
-            constructor:
-              "0x" +
-              resPQ.constructor
-                .toString(16)
-                .padStart(8, "0"),
-
-            nonce: toHex(resPQ.nonce),
-
-            server_nonce:
-              toHex(resPQ.serverNonce),
+            factorization: true,
 
             pq:
               toHex(resPQ.pq),
 
-            pq_bytes:
-              resPQ.pq.length,
+            p:
+              factors.p.toString(),
 
-            auth_key_id:
-              mtproto.authKeyId.toString(),
+            q:
+              factors.q.toString(),
 
-            message_id:
-              mtproto.messageId.toString(),
+            p_hex:
+              toHex(pBuffer),
 
-            message_length:
-              mtproto.length
+            q_hex:
+              toHex(qBuffer),
+
+            verification:
+              (
+                factors.p *
+                factors.q
+              ).toString() ===
+              factors.pq.toString()
           });
         }
 
@@ -318,7 +427,7 @@ export default {
 
     if (
       url.pathname ===
-      "/telegram-pq-test"
+      "/telegram-pq-factor-test"
     ) {
       const id =
         env.TELEGRAM_SESSION

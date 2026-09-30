@@ -1,36 +1,47 @@
 import { DurableObject } from "cloudflare:workers";
-import { MTProtoConnection } from "@mtproto2/mtproto";
+import { connect } from "cloudflare:sockets";
+import {
+  AuthKeyExchange
+} from "@mtproto2/mtproto";
 import { TELEGRAM_RSA_KEYS } from "@mtproto2/crypto";
+
 export class TelegramSession extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/mtproto-handshake-test") {
-      try {
-        const conn = new MTProtoConnection({
-  dcId: 2,
-  transport: "abridged",
-  testMode: false,
-  rsaKeys: TELEGRAM_RSA_KEYS
-});
+    if (url.pathname === "/mtproto-auth-test") {
+      let socket;
 
-await conn.connect();
+      try {
+        socket = connect({
+          hostname: "149.154.167.51",
+          port: 443
+        });
+
+        const tcp = await socket.opened;
 
         return Response.json({
           status: "ok",
+          tcp: true,
           mtproto: true,
-          handshake: true,
-          message: "MTProto handshake completed"
+          dc: 2,
+          remote: tcp.remoteAddress,
+          message: "Cloudflare TCP connection ready"
         });
 
       } catch (error) {
         return Response.json({
           status: "error",
-          mtproto: false,
-          handshake: false,
+          tcp: false,
           error: String(error),
           stack: error?.stack || null
         }, { status: 500 });
+      } finally {
+        if (socket) {
+          try {
+            await socket.close();
+          } catch {}
+        }
       }
     }
 
@@ -53,7 +64,7 @@ export default {
       });
     }
 
-    if (url.pathname === "/mtproto-handshake-test") {
+    if (url.pathname === "/mtproto-auth-test") {
       const id = env.TELEGRAM_SESSION.idFromName("main");
       return env.TELEGRAM_SESSION.get(id).fetch(request);
     }

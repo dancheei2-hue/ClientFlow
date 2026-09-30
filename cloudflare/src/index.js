@@ -1,34 +1,46 @@
 import { DurableObject } from "cloudflare:workers";
 import { connect } from "cloudflare:sockets";
+import { Buffer } from "node:buffer";
+
 import { AuthKeyExchange } from "@mtproto2/mtproto";
 import { TELEGRAM_RSA_KEYS } from "@mtproto2/crypto";
 
 function toHex(data) {
-  return Array.from(new Uint8Array(data))
-    .map((x) => x.toString(16).padStart(2, "0"))
-    .join("");
+  return Buffer.from(data)
+    .toString("hex");
 }
 
 function createMessageId() {
-  const seconds = BigInt(Math.floor(Date.now() / 1000));
+  const seconds = BigInt(
+    Math.floor(Date.now() / 1000)
+  );
+
   return (seconds << 32n) + 4n;
 }
 
 function createMtprotoMessage(payload) {
-  const body = new Uint8Array(20 + payload.length);
-  const view = new DataView(body.buffer);
+  const body = Buffer.alloc(20 + payload.length);
 
   // auth_key_id = 0
-  // bytes 0..7 remain zero
+  body.writeBigUInt64LE(0n, 0);
 
   // msg_id
-  view.setBigUint64(8, createMessageId(), true);
+  body.writeBigUInt64LE(
+    createMessageId(),
+    8
+  );
 
   // message_data_length
-  view.setUint32(16, payload.length, true);
+  body.writeUInt32LE(
+    payload.length,
+    16
+  );
 
   // payload
-  body.set(payload, 20);
+  Buffer.from(payload).copy(
+    body,
+    20
+  );
 
   return body;
 }
@@ -44,94 +56,113 @@ export class TelegramSession extends DurableObject {
 
       const debug = {
         sent: [],
-        received: [],
+        received: []
       };
 
       try {
         socket = connect({
           hostname: "149.154.167.51",
-          port: 443,
+          port: 443
         });
 
         await socket.opened;
 
-        writer = socket.writable.getWriter();
-        reader = socket.readable.getReader();
+        writer =
+          socket.writable.getWriter();
+
+        reader =
+          socket.readable.getReader();
 
         let firstPacket = true;
-        let receiveBuffer = new Uint8Array(0);
+        let receiveBuffer = Buffer.alloc(0);
 
         const send = async (payload) => {
-          const rawPayload = new Uint8Array(payload);
+          const rawPayload =
+            Buffer.from(payload);
 
           debug.sent.push({
             raw_bytes: rawPayload.length,
-            raw_hex: toHex(rawPayload).slice(0, 200),
+            raw_hex: toHex(rawPayload)
+              .slice(0, 240)
           });
 
-          // MTProto unencrypted message
-          const message = createMtprotoMessage(rawPayload);
+          const message =
+            createMtprotoMessage(
+              rawPayload
+            );
 
           debug.sent.push({
             mtproto_bytes: message.length,
-            mtproto_hex: toHex(message).slice(0, 240),
+            mtproto_hex: toHex(message)
+              .slice(0, 300)
           });
 
           // Abridged transport
           if (firstPacket) {
-            await writer.write(new Uint8Array([0xef]));
+            await writer.write(
+              new Uint8Array([0xef])
+            );
+
             firstPacket = false;
           }
 
-          const words = message.length / 4;
+          const words =
+            message.length / 4;
 
           if (!Number.isInteger(words)) {
             throw new Error(
-              `MTProto message length must be divisible by 4: ${message.length}`
+              `Invalid MTProto message length: ${message.length}`
             );
           }
 
           if (words < 127) {
-            await writer.write(new Uint8Array([words]));
+            await writer.write(
+              new Uint8Array([words])
+            );
           } else {
             await writer.write(
               new Uint8Array([
                 0x7f,
                 words & 0xff,
                 (words >> 8) & 0xff,
-                (words >> 16) & 0xff,
+                (words >> 16) & 0xff
               ])
             );
           }
 
-          await writer.write(message);
+          await writer.write(
+            new Uint8Array(message)
+          );
 
           while (true) {
-            const { value, done } = await reader.read();
+            const {
+              value,
+              done
+            } = await reader.read();
 
             if (done) {
-              throw new Error("Telegram closed TCP connection");
+              throw new Error(
+                "Telegram closed TCP connection"
+              );
             }
 
             if (!value) {
               continue;
             }
 
-            const incoming = new Uint8Array(value);
+            const incoming =
+              Buffer.from(value);
 
             debug.received.push({
               bytes: incoming.length,
-              hex: toHex(incoming).slice(0, 240),
+              hex: toHex(incoming)
+                .slice(0, 300)
             });
 
-            const merged = new Uint8Array(
-              receiveBuffer.length + incoming.length
-            );
-
-            merged.set(receiveBuffer);
-            merged.set(incoming, receiveBuffer.length);
-
-            receiveBuffer = merged;
+            receiveBuffer = Buffer.concat([
+              receiveBuffer,
+              incoming
+            ]);
 
             if (receiveBuffer.length < 1) {
               continue;
@@ -140,8 +171,12 @@ export class TelegramSession extends DurableObject {
             let lengthBytes;
             let packetWords;
 
-            if (receiveBuffer[0] === 0x7f) {
-              if (receiveBuffer.length < 4) {
+            if (
+              receiveBuffer[0] === 0x7f
+            ) {
+              if (
+                receiveBuffer.length < 4
+              ) {
                 continue;
               }
 
@@ -152,50 +187,75 @@ export class TelegramSession extends DurableObject {
 
               lengthBytes = 4;
             } else {
-              packetWords = receiveBuffer[0];
+              packetWords =
+                receiveBuffer[0];
+
               lengthBytes = 1;
             }
 
-            const packetBytes = packetWords * 4;
-            const totalBytes = lengthBytes + packetBytes;
+            const packetBytes =
+              packetWords * 4;
 
-            if (receiveBuffer.length < totalBytes) {
+            const totalBytes =
+              lengthBytes + packetBytes;
+
+            if (
+              receiveBuffer.length <
+              totalBytes
+            ) {
               continue;
             }
 
-            const packet = receiveBuffer.slice(
-              lengthBytes,
-              totalBytes
-            );
+            const packet =
+              receiveBuffer.subarray(
+                lengthBytes,
+                totalBytes
+              );
 
-            receiveBuffer = receiveBuffer.slice(totalBytes);
+            receiveBuffer =
+              receiveBuffer.subarray(
+                totalBytes
+              );
 
-            return packet;
+            // IMPORTANT:
+            // AuthKeyExchange/TLReader expects Buffer,
+            // not Uint8Array.
+            return Buffer.from(packet);
           }
         };
 
-        const exchange = new AuthKeyExchange({
-          send,
-          rsaKeys: TELEGRAM_RSA_KEYS,
-          dcId: 2,
-        });
+        const exchange =
+          new AuthKeyExchange({
+            send,
+            rsaKeys:
+              TELEGRAM_RSA_KEYS,
+            dcId: 2
+          });
 
-        const result = await exchange.execute();
+        const result =
+          await exchange.execute();
 
         return Response.json({
           status: "ok",
           handshake: true,
           authKey: true,
+
           result: {
-            authKeyId: result?.authKeyId
-              ? toHex(result.authKeyId)
-              : null,
-            serverSalt: result?.serverSalt
-              ? String(result.serverSalt)
-              : null,
-            timeOffset: result?.timeOffset ?? null,
+            authKeyId:
+              result?.authKeyId
+                ? toHex(result.authKeyId)
+                : null,
+
+            serverSalt:
+              result?.serverSalt
+                ? String(result.serverSalt)
+                : null,
+
+            timeOffset:
+              result?.timeOffset ?? null
           },
-          debug,
+
+          debug
         });
 
       } catch (error) {
@@ -204,11 +264,17 @@ export class TelegramSession extends DurableObject {
             status: "error",
             handshake: false,
             authKey: false,
+
             error: String(error),
-            stack: error?.stack || null,
-            debug,
+
+            stack:
+              error?.stack || null,
+
+            debug
           },
-          { status: 500 }
+          {
+            status: 500
+          }
         );
 
       } finally {
@@ -228,33 +294,42 @@ export class TelegramSession extends DurableObject {
 
     return Response.json({
       status: "ok",
-      component: "TelegramSession",
+      component: "TelegramSession"
     });
   }
 }
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
+    const url =
+      new URL(request.url);
 
     if (url.pathname === "/") {
       return Response.json({
         status: "ok",
         service: "ClientFlow",
-        cloudflare: true,
+        cloudflare: true
       });
     }
 
-    if (url.pathname === "/mtproto-auth-test") {
-      const id = env.TELEGRAM_SESSION.idFromName("main");
+    if (
+      url.pathname ===
+      "/mtproto-auth-test"
+    ) {
+      const id =
+        env.TELEGRAM_SESSION
+          .idFromName("main");
 
       return env.TELEGRAM_SESSION
         .get(id)
         .fetch(request);
     }
 
-    return new Response("Not found", {
-      status: 404,
-    });
-  },
+    return new Response(
+      "Not found",
+      {
+        status: 404
+      }
+    );
+  }
 };

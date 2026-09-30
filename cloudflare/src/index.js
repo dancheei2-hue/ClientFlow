@@ -9,6 +9,30 @@ function toHex(data) {
     .join("");
 }
 
+function createMessageId() {
+  const seconds = BigInt(Math.floor(Date.now() / 1000));
+  return (seconds << 32n) + 4n;
+}
+
+function createMtprotoMessage(payload) {
+  const body = new Uint8Array(20 + payload.length);
+  const view = new DataView(body.buffer);
+
+  // auth_key_id = 0
+  // bytes 0..7 remain zero
+
+  // msg_id
+  view.setBigUint64(8, createMessageId(), true);
+
+  // message_data_length
+  view.setUint32(16, payload.length, true);
+
+  // payload
+  body.set(payload, 20);
+
+  return body;
+}
+
 export class TelegramSession extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
@@ -19,8 +43,8 @@ export class TelegramSession extends DurableObject {
       let reader = null;
 
       const debug = {
-        sent_packets: [],
-        received_packets: [],
+        sent: [],
+        received: [],
       };
 
       try {
@@ -35,26 +59,35 @@ export class TelegramSession extends DurableObject {
         reader = socket.readable.getReader();
 
         let firstPacket = true;
-        let buffer = new Uint8Array(0);
+        let receiveBuffer = new Uint8Array(0);
 
-        const send = async (data) => {
-          const payload = new Uint8Array(data);
+        const send = async (payload) => {
+          const rawPayload = new Uint8Array(payload);
 
-          debug.sent_packets.push({
-            bytes: payload.length,
-            hex: toHex(payload).slice(0, 200),
+          debug.sent.push({
+            raw_bytes: rawPayload.length,
+            raw_hex: toHex(rawPayload).slice(0, 200),
           });
 
+          // MTProto unencrypted message
+          const message = createMtprotoMessage(rawPayload);
+
+          debug.sent.push({
+            mtproto_bytes: message.length,
+            mtproto_hex: toHex(message).slice(0, 240),
+          });
+
+          // Abridged transport
           if (firstPacket) {
             await writer.write(new Uint8Array([0xef]));
             firstPacket = false;
           }
 
-          const words = payload.length / 4;
+          const words = message.length / 4;
 
           if (!Number.isInteger(words)) {
             throw new Error(
-              `MTProto packet length is not divisible by 4: ${payload.length}`
+              `MTProto message length must be divisible by 4: ${message.length}`
             );
           }
 
@@ -71,7 +104,7 @@ export class TelegramSession extends DurableObject {
             );
           }
 
-          await writer.write(payload);
+          await writer.write(message);
 
           while (true) {
             const { value, done } = await reader.read();
@@ -86,56 +119,56 @@ export class TelegramSession extends DurableObject {
 
             const incoming = new Uint8Array(value);
 
-            debug.received_packets.push({
+            debug.received.push({
               bytes: incoming.length,
-              hex: toHex(incoming).slice(0, 200),
+              hex: toHex(incoming).slice(0, 240),
             });
 
             const merged = new Uint8Array(
-              buffer.length + incoming.length
+              receiveBuffer.length + incoming.length
             );
 
-            merged.set(buffer);
-            merged.set(incoming, buffer.length);
+            merged.set(receiveBuffer);
+            merged.set(incoming, receiveBuffer.length);
 
-            buffer = merged;
+            receiveBuffer = merged;
 
-            if (buffer.length < 1) {
+            if (receiveBuffer.length < 1) {
               continue;
             }
 
             let lengthBytes;
-            let packetLength;
+            let packetWords;
 
-            if (buffer[0] === 0x7f) {
-              if (buffer.length < 4) {
+            if (receiveBuffer[0] === 0x7f) {
+              if (receiveBuffer.length < 4) {
                 continue;
               }
 
-              packetLength =
-                buffer[1] |
-                (buffer[2] << 8) |
-                (buffer[3] << 16);
+              packetWords =
+                receiveBuffer[1] |
+                (receiveBuffer[2] << 8) |
+                (receiveBuffer[3] << 16);
 
               lengthBytes = 4;
             } else {
-              packetLength = buffer[0];
+              packetWords = receiveBuffer[0];
               lengthBytes = 1;
             }
 
-            const totalLength =
-              lengthBytes + packetLength * 4;
+            const packetBytes = packetWords * 4;
+            const totalBytes = lengthBytes + packetBytes;
 
-            if (buffer.length < totalLength) {
+            if (receiveBuffer.length < totalBytes) {
               continue;
             }
 
-            const packet = buffer.slice(
+            const packet = receiveBuffer.slice(
               lengthBytes,
-              totalLength
+              totalBytes
             );
 
-            buffer = buffer.slice(totalLength);
+            receiveBuffer = receiveBuffer.slice(totalBytes);
 
             return packet;
           }
@@ -170,6 +203,7 @@ export class TelegramSession extends DurableObject {
           {
             status: "error",
             handshake: false,
+            authKey: false,
             error: String(error),
             stack: error?.stack || null,
             debug,

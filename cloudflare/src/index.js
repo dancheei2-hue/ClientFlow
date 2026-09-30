@@ -8,12 +8,13 @@ export class TelegramSession extends DurableObject {
     if (url.pathname === "/mtproto-handshake-test") {
       try {
         const conn = new MTProtoConnection({
-          dcId: 2,
-          transport: "abridged",
-          testMode: false
-        });
+  dcId: 2,
+  transport: "abridged",
+  testMode: false,
+  rsaKeys: TELEGRAM_RSA_KEYS
+});
 
-        await conn.connect();
+await conn.connect();
 
         return Response.json({
           status: "ok",

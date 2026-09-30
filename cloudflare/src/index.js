@@ -1,41 +1,31 @@
 import { DurableObject } from "cloudflare:workers";
-import { connect } from "cloudflare:sockets";
+import { MTProtoConnection } from "@mtproto2/mtproto";
 
 export class TelegramSession extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-  }
-
   async fetch(request) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/tcp-test") {
+    if (url.pathname === "/mtproto-test") {
       try {
-        const socket = connect({
-          hostname: "149.154.167.50",
-          port: 443
+        const conn = new MTProtoConnection({
+          dcId: 2,
+          transport: "abridged",
+          testMode: false
         });
-
-        const info = await socket.opened;
-
-        await socket.close();
 
         return Response.json({
           status: "ok",
-          tcp: true,
-          telegram: true,
-          remote: info.remoteAddress
+          mtproto: true,
+          library: "loaded",
+          connection: "created"
         });
       } catch (error) {
-        return Response.json(
-          {
-            status: "error",
-            tcp: false,
-            telegram: false,
-            error: String(error)
-          },
-          { status: 500 }
-        );
+        return Response.json({
+          status: "error",
+          mtproto: false,
+          error: String(error),
+          stack: error?.stack || null
+        }, { status: 500 });
       }
     }
 
@@ -58,22 +48,9 @@ export default {
       });
     }
 
-    if (url.pathname === "/telegram-test") {
+    if (url.pathname === "/mtproto-test") {
       const id = env.TELEGRAM_SESSION.idFromName("main");
-      const stub = env.TELEGRAM_SESSION.get(id);
-
-      return await stub.fetch(
-        new Request("https://telegram-session/status")
-      );
-    }
-
-    if (url.pathname === "/tcp-test") {
-      const id = env.TELEGRAM_SESSION.idFromName("main");
-      const stub = env.TELEGRAM_SESSION.get(id);
-
-      return await stub.fetch(
-        new Request("https://telegram-session/tcp-test")
-      );
+      return env.TELEGRAM_SESSION.get(id).fetch(request);
     }
 
     return new Response("Not found", { status: 404 });

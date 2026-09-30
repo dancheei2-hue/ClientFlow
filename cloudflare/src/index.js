@@ -1,7 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { MTProtoConnection } from "@mtproto2/mtproto";
 import { TELEGRAM_RSA_KEYS } from "@mtproto2/crypto";
-
 export class TelegramSession extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);

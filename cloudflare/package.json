@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mtproto2/crypto": "0.1.0",
     "@mtproto2/mtproto": "0.1.0",
-    "@mtproto2/crypto": "0.1.0"
+    "@mtproto2/transport": "0.1.0"
   }
 }

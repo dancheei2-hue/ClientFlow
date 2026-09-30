@@ -1,5 +1,8 @@
 {
   "name": "clientflow-cloudflare",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "mtproto-js": "^1.0.0"
+  }
 }

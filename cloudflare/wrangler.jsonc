@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "clientflow-telegram",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-30",
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TELEGRAM_SESSION",
+        "class_name": "TelegramSession"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "TelegramSession"
+      ]
+    }
+  ]
+}
